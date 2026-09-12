@@ -67,10 +67,29 @@ export class LoroDataPlaneRelay {
 
   constructor(
     socketPath: string,
-    createSocket: (socketPath: string) => net.Socket = (path) => net.createConnection(path)
+    createSocket?: (socketPath: string) => net.Socket
   ) {
     this.socketPath = socketPath
-    this.createSocket = createSocket
+    if (createSocket) {
+      this.createSocket = createSocket
+    } else {
+      const remoteEndpoint =
+        process.env.LODY_REMOTE_LORO_SERVER ||
+        process.env.LODY_DATA_PLANE_URL ||
+        (socketPath.startsWith('tcp://') || /^\d+\.\d+\.\d+\.\d+:\d+$/.test(socketPath)
+          ? socketPath
+          : null)
+
+      if (remoteEndpoint) {
+        const cleaned = remoteEndpoint.replace(/^tcp:\/\//, '')
+        const [host, portStr] = cleaned.split(':')
+        const port = Number.parseInt(portStr, 10)
+        console.info(`[loro-data-plane-relay] Connecting to remote Loro data plane relay at ${host}:${port}`)
+        this.createSocket = () => net.createConnection({ host, port })
+      } else {
+        this.createSocket = (path) => net.createConnection(path)
+      }
+    }
   }
 
   setEnabled(enabled: boolean): void {

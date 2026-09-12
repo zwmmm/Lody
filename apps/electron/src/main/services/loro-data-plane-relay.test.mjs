@@ -28,3 +28,38 @@ void test('does not probe the local data plane while local agents are disabled',
   relay.destroy()
   await Promise.resolve()
 })
+
+void test("connects to remote Loro relay when LODY_REMOTE_LORO_SERVER is configured", async () => {
+  const originalEnv = process.env.LODY_REMOTE_LORO_SERVER;
+  let capturedHost = null;
+  let capturedPort = null;
+  const originalCreateConnection = net.createConnection;
+  net.createConnection = (options) => {
+    if (typeof options === "object" && options.host && options.port) {
+      capturedHost = options.host;
+      capturedPort = options.port;
+    }
+    const socket = new net.Socket();
+    queueMicrotask(() => socket.emit("error", new Error("mock connection closed")));
+    return socket;
+  };
+
+  try {
+    process.env.LODY_REMOTE_LORO_SERVER = "192.168.1.50:17789";
+    const relay = new LoroDataPlaneRelay("/unused/local.sock");
+    relay.send({
+      type: "ping",
+      protocolVersion: LOCAL_LORO_DATA_PLANE_PROTOCOL_VERSION
+    });
+    assert.equal(capturedHost, "192.168.1.50");
+    assert.equal(capturedPort, 17789);
+    relay.destroy();
+  } finally {
+    net.createConnection = originalCreateConnection;
+    if (originalEnv === undefined) {
+      delete process.env.LODY_REMOTE_LORO_SERVER;
+    } else {
+      process.env.LODY_REMOTE_LORO_SERVER = originalEnv;
+    }
+  }
+});
