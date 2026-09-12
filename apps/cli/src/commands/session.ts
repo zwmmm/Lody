@@ -2397,8 +2397,7 @@ function selectWorkspaceRepoFullName(
     return undefined;
   }
   const normalized = repoFullName.toLowerCase();
-  const matched = workspaceRepositories.find((repo) => repo.fullName.toLowerCase() === normalized)?.fullName;
-  return matched ?? repoFullName;
+  return workspaceRepositories.find((repo) => repo.fullName.toLowerCase() === normalized)?.fullName;
 }
 
 /**
