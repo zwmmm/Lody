@@ -8,6 +8,7 @@ import { Trash2 } from 'lucide-react';
 import { Loading } from '@/ui';
 import { Button } from '@/ui/button';
 import { Switch } from '@/ui/switch';
+import { Input } from '@/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/ui/select';
 import { toast } from 'sonner';
 import {
@@ -122,6 +123,17 @@ export function GeneralSettingsComponent() {
   const clearCache = useClearCache();
   const isMobile = useIsMobile();
   const isElectron = typeof window !== 'undefined' && window.__LODY_ELECTRON__ === true;
+  const [remoteLoroServer, setRemoteLoroServer] = useState('');
+  const [remoteLoroServerLoading, setRemoteLoroServerLoading] = useState(false);
+
+  useEffect(() => {
+    if (!isElectron) return;
+    const services = getIpcServices();
+    if (!services?.loro?.getRemoteServerUrl) return;
+    void services.loro.getRemoteServerUrl().then((url) => {
+      if (typeof url === 'string') setRemoteLoroServer(url);
+    });
+  }, [isElectron]);
   const autoLaunch = useElectronAutoLaunch(isElectron && !isMobile);
   const isNative = !isElectron && isNativeAppShell();
   const showMobileInputSettings = isMobile || isNative;
@@ -790,6 +802,36 @@ export function GeneralSettingsComponent() {
                     })();
                   }}
                 />
+              </CompactRow>
+            </div>
+            <div id="loro-remote-server" className="scroll-mt-24">
+              <CompactRow
+                label={t('settings.general.remoteLoroServer.label', 'Loro Relay Server')}
+                helper={t(
+                  'settings.general.remoteLoroServer.helper',
+                  'Optional remote relay WebSocket/TCP URL (e.g. wss://.../loro-relay). Leave blank in local mode to avoid pushing to remote.'
+                )}
+                alignTop
+              >
+                <div className="flex w-64 items-center gap-2">
+                  <Input
+                    id="remote-loro-server-input"
+                    value={remoteLoroServer}
+                    placeholder="wss://... or empty"
+                    className="h-8 text-xs"
+                    onChange={(e) => setRemoteLoroServer(e.target.value)}
+                    onBlur={() => {
+                      const services = getIpcServices();
+                      if (!services?.loro?.setRemoteServerUrl) return;
+                      setRemoteLoroServerLoading(true);
+                      void services.loro.setRemoteServerUrl(remoteLoroServer).finally(() => {
+                        setRemoteLoroServerLoading(false);
+                        toast.success(t('settings.general.remoteLoroServer.saved', 'Relay server saved'));
+                      });
+                    }}
+                  />
+                  {remoteLoroServerLoading && <Loading size="sm" className="h-4 w-4 shrink-0" />}
+                </div>
               </CompactRow>
             </div>
           </CompactSection>

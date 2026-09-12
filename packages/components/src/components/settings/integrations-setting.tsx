@@ -25,6 +25,7 @@ import { toast } from 'sonner';
 import { useSettingsDataCache, type SettingsWorkspaceRepoWithStatus } from './settings-data-cache';
 import { MobileIntegrationsSettings } from '@/components/mobile/mobile-integrations-settings';
 import { isElectronRenderer } from '@/lib/electron';
+import { getIpcServices } from '@/lib/electron-ipc-client';
 import { openExternalUrl } from '@/lib/native-browser';
 import { useAuthClient } from '../../providers/convex-provider';
 import { canRunAuthedWorkspaceQuery } from '@/lib/authed-convex-query';
@@ -265,14 +266,151 @@ export function GitHubPersonalIdentitySettingsCard({
  * 用于管理第三方服务集成，如 GitHub App，支持移动端响应式布局
  */
 export function IntegrationsSettingsComponent() {
-  // Registry-level gating already hides the GitHub tab without the
-  // 'githubIntegration' capability; safety net for deep links in local builds.
   const githubIntegrationAvailable = useAppCapability('githubIntegration');
+  const isElectron = typeof window !== 'undefined' && window.__LODY_ELECTRON__ === true;
+
   if (!githubIntegrationAvailable) {
+    if (isElectron) {
+      return <LocalGithubCliSettings />;
+    }
     return null;
   }
   return <CloudIntegrationsSettings />;
 }
+function LocalGithubCliSettings() {
+  const { t } = useTranslation();
+  const isMobile = useIsMobile();
+  const [authStatus, setAuthStatus] = useState<{ authenticated: boolean; user?: string; error?: string } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [repos, setRepos] = useState<Array<{ id: string; name: string; fullName: string; private: boolean; description?: string }>>([]);
+  const [search, setSearch] = useState('');
+
+  const refresh = useCallback(async () => {
+    const services = getIpcServices();
+    if (!services?.localProjects) return;
+    setLoading(true);
+    try {
+      const auth = await (services.localProjects as any).getGithubAuthStatus();
+      setAuthStatus(auth);
+      if (auth.authenticated) {
+        const repoRes = await (services.localProjects as any).listGithubRepositories();
+        if (repoRes?.ok && Array.isArray(repoRes.repositories)) {
+          setRepos(repoRes.repositories);
+        }
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const filteredRepos = useMemo(() => {
+    if (!search.trim()) return repos;
+    const q = search.trim().toLowerCase();
+    return repos.filter((r) => r.fullName.toLowerCase().includes(q));
+  }, [repos, search]);
+
+  return (
+    <div className={cn(settingContainerClass, isMobile ? 'px-4 py-4' : 'max-w-4xl py-6')}>
+      <div className="mb-6 flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-semibold tracking-tight text-foreground">
+            {t('settings.integrations.title', 'GitHub Integration')}
+          </h2>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            {t('settings.integrations.github.localCliDescription', 'Using local GitHub CLI (gh) configuration and credentials.')}
+          </p>
+        </div>
+        <Button size="sm" variant="outline" onClick={refresh} disabled={loading} className="text-xs">
+          {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : null}
+          {t('common.refresh', 'Refresh')}
+        </Button>
+      </div>
+
+      <div className="rounded-lg border border-border/70 bg-card/60 p-4 mb-6">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-foreground/[0.06] text-muted-foreground">
+              <Github className="h-5 w-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-semibold text-foreground">
+                  {authStatus?.authenticated ? "@" + String(authStatus.user) : "GitHub CLI"}
+                </span>
+                {authStatus?.authenticated ? (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+                    <CheckCircle2 className="h-3 w-3" /> Connected via gh
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
+                    <AlertCircle className="h-3 w-3" /> Not Logged In
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {authStatus?.authenticated
+                  ? 'Authenticated using your local gh CLI session.'
+                  : 'Run "gh auth login" in your terminal to connect your GitHub account.'}
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {authStatus?.authenticated && (
+        <div className="rounded-lg border border-border/70 bg-card/60 p-4">
+          <div className="mb-3 flex items-center justify-between gap-4">
+            <span className="text-xs font-semibold text-foreground">
+              Repositories ({repos.length})
+            </span>
+            <div className="w-48">
+              <Input
+                placeholder="Search repositories..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="h-7 text-xs"
+              />
+            </div>
+          </div>
+          <ScrollArea className="h-80">
+            <div className="space-y-1.5 pr-2">
+              {filteredRepos.map((repo) => (
+                <div
+                  key={repo.id}
+                  className="flex items-center justify-between rounded-md border border-border/40 bg-muted/20 px-3 py-2 text-xs"
+                >
+                  <div className="min-w-0 pr-2">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium text-foreground truncate">{repo.fullName}</span>
+                      {repo.private && (
+                        <span className="rounded bg-muted px-1.5 py-0.2 text-[10px] text-muted-foreground border border-border/50">
+                          Private
+                        </span>
+                      )}
+                    </div>
+                    {repo.description && (
+                      <p className="text-[11px] text-muted-foreground truncate mt-0.5">{repo.description}</p>
+                    )}
+                  </div>
+                </div>
+              ))}
+              {filteredRepos.length === 0 && (
+                <div className="py-8 text-center text-xs text-muted-foreground">
+                  No repositories found
+                </div>
+              )}
+            </div>
+          </ScrollArea>
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 function CloudIntegrationsSettings() {
   const { t } = useTranslation();

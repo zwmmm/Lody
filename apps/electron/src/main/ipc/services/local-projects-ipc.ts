@@ -1,5 +1,6 @@
 import { BrowserWindow } from 'electron'
 import { dialog } from 'electron'
+import { spawn } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -19,6 +20,7 @@ import type { LocalProjectHistoryProvider, LocalProjectId } from '@lody/shared/p
 import { formatUnknownError } from '../../utils'
 import { getIpcServiceDeps } from '../ipc-service-deps'
 import { sendLocalProjectControl } from '../local-project-dispatch'
+import { getUserShellEnvCached } from '../../services/shell-env'
 
 const SESSION_FILE_SEND_LOCAL_MAX_COUNT = 8
 const SESSION_FILE_SEND_LOCAL_MAX_SIZE_BYTES = 100 * 1024 * 1024
@@ -350,5 +352,88 @@ export class LocalProjectsIpc extends IpcService {
       return { error: `Unexpected response type: ${response.type}` }
     }
     return response.result
+  }
+
+  @IpcMethod()
+  async getGithubAuthStatus(): Promise<{ authenticated: boolean; user?: string; error?: string }> {
+    const userEnv = await getUserShellEnvCached()
+    const env = { ...process.env, ...(userEnv ?? {}) }
+    return await new Promise((resolve) => {
+      const child = spawn('gh', ['auth', 'status'], {
+        env,
+        stdio: ['ignore', 'pipe', 'pipe']
+      })
+      let output = ''
+      child.stdout?.on('data', (d) => (output += d.toString()))
+      child.stderr?.on('data', (d) => (output += d.toString()))
+      child.on('error', (err) => {
+        resolve({ authenticated: false, error: err.message })
+      })
+      child.on('close', (code) => {
+        if (code === 0) {
+          const match = /Logged in to [^ ]+ account ([^ ]+)/.exec(output)
+          resolve({ authenticated: true, user: match?.[1] })
+        } else {
+          resolve({ authenticated: false, error: output || `gh exited with code ${code}` })
+        }
+      })
+    })
+  }
+
+  @IpcMethod()
+  async listGithubRepositories(): Promise<{
+    ok: boolean
+    repositories?: Array<{
+      id: string
+      name: string
+      fullName: string
+      private: boolean
+      description?: string
+    }>
+    error?: string
+  }> {
+    const userEnv = await getUserShellEnvCached()
+    const env = { ...process.env, ...(userEnv ?? {}) }
+    return await new Promise((resolve) => {
+      const child = spawn(
+        'gh',
+        ['repo', 'list', '--limit', '100', '--json', 'nameWithOwner,name,isPrivate,description'],
+        {
+          env,
+          stdio: ['ignore', 'pipe', 'pipe']
+        }
+      )
+      let stdout = ''
+      let stderr = ''
+      child.stdout?.on('data', (d) => (stdout += d.toString()))
+      child.stderr?.on('data', (d) => (stderr += d.toString()))
+      child.on('error', (err) => {
+        resolve({ ok: false, error: err.message })
+      })
+      child.on('close', (code) => {
+        if (code === 0) {
+          try {
+            const rawRepos = JSON.parse(stdout) as Array<{
+              nameWithOwner: string
+              name: string
+              isPrivate: boolean
+              description?: string | null
+            }>
+            const repositories = rawRepos.map((r) => ({
+              id: r.nameWithOwner,
+              name: r.name,
+              fullName: r.nameWithOwner,
+              private: r.isPrivate,
+              description: r.description ?? undefined
+            }))
+            resolve({ ok: true, repositories })
+          } catch (e: any) {
+            resolve({ ok: false, error: `JSON parse error: ${e.message}` })
+          }
+        } else {
+          resolve({ ok: false, error: stderr || `gh repo list failed with code ${code}` })
+        }
+      })
+    })
   }
 }

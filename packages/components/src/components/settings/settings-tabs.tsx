@@ -214,7 +214,7 @@ export function useVisibleSettingsTabs(options?: {
   return SETTINGS_TAB_CONFIGS.filter(
     (tab) =>
       (tab.id !== 'prompt-shortcuts' || promptShortcutsEnabled) &&
-      (tab.capability === undefined || hasCapability(tab.capability)) &&
+      (tab.capability === undefined || hasCapability(tab.capability) || (tab.id === 'github' && typeof window !== 'undefined' && window.__LODY_ELECTRON__ === true)) &&
       (!tab.multiMemberOnly || includeMultiMemberOnly)
   );
 }

@@ -772,8 +772,21 @@ function WorkspaceChatLanding({
       }[]
     | null
     | undefined;
-  const repositories = freshRepositories ?? cachedRepositories ?? undefined;
   const isElectron = isElectronRenderer();
+  const [ghCliRepos, setGhCliRepos] = useState<any[] | null>(null);
+
+  useEffect(() => {
+    if (!isElectron) return;
+    const services = getIpcServices();
+    if (!services?.localProjects?.listGithubRepositories) return;
+    void services.localProjects.listGithubRepositories().then((res: any) => {
+      if (res?.ok && Array.isArray(res.repositories)) {
+        setGhCliRepos(res.repositories);
+      }
+    }).catch(() => undefined);
+  }, [isElectron]);
+
+  const repositories = freshRepositories ?? (ghCliRepos && ghCliRepos.length > 0 ? ghCliRepos : cachedRepositories) ?? undefined;
   const launchMode = useMemo(() => detectAppLaunchMode(isElectron), [isElectron]);
   const hasGitHubRepos = (repositories?.length ?? 0) > 0;
   const repositoriesReady = freshRepositories !== undefined;

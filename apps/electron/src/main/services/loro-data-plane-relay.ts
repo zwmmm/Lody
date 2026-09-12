@@ -9,6 +9,7 @@ import {
   type LocalLoroDataPlaneClientMessage,
   type LocalLoroDataPlaneServerMessage
 } from '@lody/shared/local-loro-data-plane'
+import { readElectronSettings, writeElectronSettings } from './electron-settings'
 
 // Liveness watchdog (plan-mandated idle watchdog for the data plane): ping the
 // daemon on an interval and treat a silent socket as dead — a stalled push
@@ -109,8 +110,9 @@ function createWebSocketAsSocket(url: string): net.Socket {
 }
 
 export class LoroDataPlaneRelay {
-  private readonly socketPath: string
-  private readonly createSocket: (socketPath: string) => net.Socket
+  private readonly defaultSocketPath: string
+  private customEndpoint: string | null = null
+  private readonly customCreateSocket?: (socketPath: string) => net.Socket
   private socket: net.Socket | null = null
   private connecting: Promise<void> | null = null
   private connected = false
@@ -132,34 +134,85 @@ export class LoroDataPlaneRelay {
     socketPath: string,
     createSocket?: (socketPath: string) => net.Socket
   ) {
-    this.socketPath = socketPath
+    this.defaultSocketPath = socketPath
     if (createSocket) {
-      this.createSocket = createSocket
-    } else {
-      const remoteEndpoint =
-        process.env.LODY_REMOTE_LORO_SERVER ||
-        process.env.LODY_DATA_PLANE_URL ||
-        (socketPath.startsWith('tcp://') ||
-        socketPath.startsWith('ws://') ||
-        socketPath.startsWith('wss://') ||
-        /^\d+\.\d+\.\d+\.\d+:\d+$/.test(socketPath)
-          ? socketPath
-          : null)
+      this.customCreateSocket = createSocket
+    }
+  }
 
-      if (remoteEndpoint) {
-        if (remoteEndpoint.startsWith('ws://') || remoteEndpoint.startsWith('wss://')) {
-          console.info(`[loro-data-plane-relay] Connecting to remote WebSocket Loro relay at ${remoteEndpoint}`)
-          this.createSocket = () => createWebSocketAsSocket(remoteEndpoint)
-        } else {
-          const cleaned = remoteEndpoint.replace(/^tcp:\/\//, '')
-          const [host, portStr] = cleaned.split(':')
-          const port = Number.parseInt(portStr, 10)
-          console.info(`[loro-data-plane-relay] Connecting to remote TCP Loro relay at ${host}:${port}`)
-          this.createSocket = () => net.createConnection({ host, port })
-        }
+  getRemoteServer(): string {
+    if (this.customEndpoint !== null) {
+      return this.customEndpoint
+    }
+    const settings = readElectronSettings()
+    if (typeof settings.remoteLoroServer === 'string' && settings.remoteLoroServer.trim()) {
+      return settings.remoteLoroServer.trim()
+    }
+    return process.env.LODY_REMOTE_LORO_SERVER || process.env.LODY_DATA_PLANE_URL || ''
+  }
+
+  setRemoteServer(url: string): void {
+    const trimmed = url.trim()
+    this.customEndpoint = trimmed
+    const current = readElectronSettings()
+    current.remoteLoroServer = trimmed
+    writeElectronSettings(current)
+
+    // Reconnect with new endpoint or close existing connection
+    this.clearRedialTimer()
+    this.stopPingLoop()
+    this.clearPendingDaemonWrites()
+    const prevSocket = this.socket
+    this.socket = null
+    this.connecting = null
+    this.setConnected(false)
+    prevSocket?.destroy()
+
+    if (this.enabled && this.senders.size > 0 && this.shouldConnect()) {
+      void this.ensureConnected().catch(() => this.scheduleRedial())
+    }
+  }
+
+  private shouldConnect(): boolean {
+    if (this.customCreateSocket) return true
+    const endpoint = this.getRemoteServer()
+    if (endpoint) return true
+    const sPath = this.defaultSocketPath
+    const isSocketRemote =
+      sPath.startsWith('tcp://') ||
+      sPath.startsWith('ws://') ||
+      sPath.startsWith('wss://') ||
+      /^\d+\.\d+\.\d+\.\d+:\d+$/.test(sPath)
+    if (isSocketRemote) return true
+    return true
+  }
+
+  private buildSocket(): net.Socket {
+    if (this.customCreateSocket) {
+      return this.customCreateSocket(this.defaultSocketPath)
+    }
+    const remoteEndpoint =
+      this.getRemoteServer() ||
+      (this.defaultSocketPath.startsWith('tcp://') ||
+      this.defaultSocketPath.startsWith('ws://') ||
+      this.defaultSocketPath.startsWith('wss://') ||
+      /^\d+\.\d+\.\d+\.\d+:\d+$/.test(this.defaultSocketPath)
+        ? this.defaultSocketPath
+        : null)
+
+    if (remoteEndpoint) {
+      if (remoteEndpoint.startsWith('ws://') || remoteEndpoint.startsWith('wss://')) {
+        console.info(`[loro-data-plane-relay] Connecting to remote WebSocket Loro relay at ${remoteEndpoint}`)
+        return createWebSocketAsSocket(remoteEndpoint)
       } else {
-        this.createSocket = (path) => net.createConnection(path)
+        const cleaned = remoteEndpoint.replace(/^tcp:\/\//, '')
+        const [host, portStr] = cleaned.split(':')
+        const port = Number.parseInt(portStr, 10)
+        console.info(`[loro-data-plane-relay] Connecting to remote TCP Loro relay at ${host}:${port}`)
+        return net.createConnection({ host, port })
       }
+    } else {
+      return net.createConnection(this.defaultSocketPath)
     }
   }
 
@@ -168,7 +221,7 @@ export class LoroDataPlaneRelay {
     this.enabled = enabled
 
     if (enabled) {
-      if (this.senders.size > 0) {
+      if (this.senders.size > 0 && this.shouldConnect()) {
         void this.ensureConnected().catch(() => this.scheduleRedial())
       }
       return
@@ -201,7 +254,7 @@ export class LoroDataPlaneRelay {
       // transport can join immediately when the daemon is already reachable.
       sender.send('loro.status', this.connected)
     }
-    if (this.enabled) {
+    if (this.enabled && this.shouldConnect()) {
       void this.ensureConnected().catch(() => this.scheduleRedial())
     }
   }
@@ -212,7 +265,7 @@ export class LoroDataPlaneRelay {
 
   send(message: LocalLoroDataPlaneClientMessage, sender?: WebContents): void {
     this.attachSender(sender)
-    if (!this.enabled) return
+    if (!this.enabled || !this.shouldConnect()) return
     this.trackPeer(message, sender)
     void this.ensureConnected()
       .then(() => this.write(message))
@@ -276,10 +329,10 @@ export class LoroDataPlaneRelay {
     if (this.connecting) return await this.connecting
 
     this.connecting = new Promise<void>((resolve, reject) => {
-      const socket = this.createSocket(this.socketPath)
+      const socket = this.buildSocket()
       this.socket = socket
       const splitLines = createJsonLineSplitter({
-        onLine: (line) => this.handleLine(socket, line),
+        onLine: (line) => this.handleLine(line),
         // Defense-in-depth: a compliant daemon never sends an oversized frame
         // (sender-side budget); cap main-process buffering against a
         // non-compliant one and skip the frame rather than kill the socket.
@@ -403,50 +456,47 @@ export class LoroDataPlaneRelay {
       this.pendingDaemonBytes += line.length
       return
     }
-    this.daemonWriteBlocked = !socket.write(line)
+
+    const drained = socket.write(line)
+    if (!drained) {
+      this.daemonWriteBlocked = true
+    }
   }
 
   private flushPendingDaemonWrites(socket: net.Socket): void {
     this.daemonWriteBlocked = false
     while (this.pendingDaemonWrites.length > 0) {
-      if (socket.destroyed) {
-        this.clearPendingDaemonWrites()
-        return
-      }
-      const pending = this.pendingDaemonWrites[0]
-      if (pending === undefined) {
-        return
-      }
-      this.pendingDaemonWrites.shift()
-      this.pendingDaemonBytes -= pending.line.length
-      if (!socket.write(pending.line)) {
+      const next = this.pendingDaemonWrites.shift()
+      if (!next) break
+      this.pendingDaemonBytes = Math.max(0, this.pendingDaemonBytes - next.line.length)
+      const drained = socket.write(next.line)
+      if (!drained) {
         this.daemonWriteBlocked = true
-        return
+        break
       }
     }
   }
 
   private clearPendingDaemonWrites(): void {
-    this.daemonWriteBlocked = false
     this.pendingDaemonWrites = []
     this.pendingDaemonBytes = 0
+    this.daemonWriteBlocked = false
   }
 
-  private handleLine(socket: net.Socket, line: string): void {
-    if (socket.destroyed) return
-    let raw: unknown
+  private handleLine(line: string): void {
+    let parsedJson: unknown
     try {
-      raw = JSON.parse(line)
+      parsedJson = JSON.parse(line)
     } catch {
-      socket.destroy()
+      console.warn('[loro-data-plane-relay] unparseable JSON frame from daemon')
       return
     }
-    const parsed = LocalLoroDataPlaneServerMessageSchema.safeParse(raw)
-    if (!parsed.success) return
-    if (parsed.data.type === 'pong') {
-      // Liveness only; `lastInboundAt` was already refreshed on the data event.
+    const parsed = LocalLoroDataPlaneServerMessageSchema.safeParse(parsedJson)
+    if (!parsed.success) {
+      console.warn('[loro-data-plane-relay] invalid message schema from daemon', parsed.error)
       return
     }
+    if (parsed.data.type === 'pong') return
     this.publish(parsed.data)
   }
 
