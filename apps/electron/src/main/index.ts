@@ -1,3 +1,4 @@
+import path from 'node:path'
 import {
   registerLocalFileResourceScheme,
   installLocalFileResourceProtocol
@@ -115,6 +116,8 @@ function logDeepLinkDebug(message: string, meta?: Record<string, unknown>): void
 }
 
 app.setName(PRODUCT_NAME)
+const appData = app.getPath("appData")
+app.setPath("userData", path.join(appData, PRODUCT_NAME))
 if (process.platform === 'linux') {
   // KDE resolves task-manager icons through the desktop file whose basename
   // matches the Wayland app_id / X11 WM_CLASS. Keep this dynamic because the
