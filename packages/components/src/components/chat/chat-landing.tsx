@@ -492,9 +492,10 @@ const resolveLocalProjectGithubRepoFullName = (
   if (!gitState?.git) return null;
   const repoFullName = gitState.githubRepoFullName?.trim();
   if (!repoFullName) return null;
-  return workspaceRepositories?.some((repo) => repo.fullName === repoFullName)
-    ? repoFullName
-    : null;
+  const matched = workspaceRepositories?.find(
+    (repo) => repo.fullName.toLowerCase() === repoFullName.toLowerCase()
+  )?.fullName;
+  return matched ?? repoFullName;
 };
 
 type LocalProjectGitStateEntry = {

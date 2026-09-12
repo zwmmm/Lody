@@ -1275,14 +1275,14 @@ describe('session command helpers', () => {
     ).toEqual({ branch: 'main', githubRepoFullName: 'loro-dev/lody' });
   });
 
-  it('keeps a local session local when its origin is not a workspace repository', () => {
+  it('retains local github identity when origin is not in cloud workspace repositories', () => {
     expect(
       resolveLocalProjectCreateGitContext({
         gitState: createLocalProjectGitState(),
         workspaceRepositories: [{ fullName: 'loro-dev/other' }],
         useWorktree: true,
       })
-    ).toEqual({ branch: 'main' });
+    ).toEqual({ branch: 'main', githubRepoFullName: 'loro-dev/lody' });
     expect(
       resolveLocalProjectCreateGitContext({
         gitState: createLocalProjectGitState({ githubRepoFullName: null }),
