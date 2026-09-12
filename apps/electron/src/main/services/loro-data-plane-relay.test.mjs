@@ -63,3 +63,42 @@ void test("connects to remote Loro relay when LODY_REMOTE_LORO_SERVER is configu
     }
   }
 });
+
+void test("connects to remote WebSocket Loro relay when LODY_REMOTE_LORO_SERVER is a wss URL", async () => {
+  const originalEnv = process.env.LODY_REMOTE_LORO_SERVER;
+  const originalWS = globalThis.WebSocket;
+  let instantiatedUrl = null;
+
+  class MockWebSocket {
+    constructor(url) {
+      instantiatedUrl = url;
+      this.readyState = 1;
+      queueMicrotask(() => {
+        if (this.onopen) this.onopen();
+      });
+    }
+    send() {}
+    close() {
+      if (this.onclose) this.onclose();
+    }
+  }
+
+  try {
+    globalThis.WebSocket = MockWebSocket;
+    process.env.LODY_REMOTE_LORO_SERVER = "wss://demo.supabase.co/functions/v1/loro-relay";
+    const relay = new LoroDataPlaneRelay("/unused/local.sock");
+    relay.send({
+      type: "ping",
+      protocolVersion: LOCAL_LORO_DATA_PLANE_PROTOCOL_VERSION
+    });
+    assert.equal(instantiatedUrl, "wss://demo.supabase.co/functions/v1/loro-relay");
+    relay.destroy();
+  } finally {
+    globalThis.WebSocket = originalWS;
+    if (originalEnv === undefined) {
+      delete process.env.LODY_REMOTE_LORO_SERVER;
+    } else {
+      process.env.LODY_REMOTE_LORO_SERVER = originalEnv;
+    }
+  }
+});

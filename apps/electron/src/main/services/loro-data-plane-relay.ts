@@ -1,4 +1,5 @@
 import net from 'node:net'
+import { EventEmitter } from 'node:events'
 import { type WebContents } from 'electron'
 import {
   createJsonLineSplitter,
@@ -45,6 +46,68 @@ type PendingDaemonWrite = {
  * (reload) — a dead renderer cannot send its own goodbye, and without it the
  * daemon would hold its room subscriptions for the life of the shared socket.
  */
+function createWebSocketAsSocket(url: string): net.Socket {
+  const emitter = new EventEmitter() as any
+  let ws: any = null
+  let isDestroyed = false
+
+  emitter.destroyed = false
+  emitter.write = (chunk: any) => {
+    if (ws && ws.readyState === 1 /* OPEN */) {
+      const text = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8')
+      ws.send(text)
+      return true
+    }
+    return false
+  }
+
+  emitter.destroy = (error?: Error) => {
+    if (isDestroyed) return
+    isDestroyed = true
+    emitter.destroyed = true
+    if (ws) {
+      try {
+        ws.close()
+      } catch {}
+    }
+    if (error) {
+      emitter.emit('error', error)
+    }
+    emitter.emit('close')
+  }
+
+  try {
+    ws = new (globalThis as any).WebSocket(url)
+  } catch (err) {
+    queueMicrotask(() => emitter.emit('error', err))
+    return emitter as net.Socket
+  }
+
+  ws.onopen = () => {
+    emitter.emit('connect')
+  }
+
+  ws.onmessage = (event: any) => {
+    let raw = event.data
+    let str = typeof raw === 'string' ? raw : Buffer.from(raw).toString('utf-8')
+    if (!str.endsWith('\n')) {
+      str += '\n'
+    }
+    emitter.emit('data', Buffer.from(str, 'utf-8'))
+  }
+
+  ws.onerror = (event: any) => {
+    emitter.emit('error', new Error(event.message || 'WebSocket error'))
+  }
+
+  ws.onclose = () => {
+    emitter.destroyed = true
+    emitter.emit('close')
+  }
+
+  return emitter as net.Socket
+}
+
 export class LoroDataPlaneRelay {
   private readonly socketPath: string
   private readonly createSocket: (socketPath: string) => net.Socket
@@ -76,16 +139,24 @@ export class LoroDataPlaneRelay {
       const remoteEndpoint =
         process.env.LODY_REMOTE_LORO_SERVER ||
         process.env.LODY_DATA_PLANE_URL ||
-        (socketPath.startsWith('tcp://') || /^\d+\.\d+\.\d+\.\d+:\d+$/.test(socketPath)
+        (socketPath.startsWith('tcp://') ||
+        socketPath.startsWith('ws://') ||
+        socketPath.startsWith('wss://') ||
+        /^\d+\.\d+\.\d+\.\d+:\d+$/.test(socketPath)
           ? socketPath
           : null)
 
       if (remoteEndpoint) {
-        const cleaned = remoteEndpoint.replace(/^tcp:\/\//, '')
-        const [host, portStr] = cleaned.split(':')
-        const port = Number.parseInt(portStr, 10)
-        console.info(`[loro-data-plane-relay] Connecting to remote Loro data plane relay at ${host}:${port}`)
-        this.createSocket = () => net.createConnection({ host, port })
+        if (remoteEndpoint.startsWith('ws://') || remoteEndpoint.startsWith('wss://')) {
+          console.info(`[loro-data-plane-relay] Connecting to remote WebSocket Loro relay at ${remoteEndpoint}`)
+          this.createSocket = () => createWebSocketAsSocket(remoteEndpoint)
+        } else {
+          const cleaned = remoteEndpoint.replace(/^tcp:\/\//, '')
+          const [host, portStr] = cleaned.split(':')
+          const port = Number.parseInt(portStr, 10)
+          console.info(`[loro-data-plane-relay] Connecting to remote TCP Loro relay at ${host}:${port}`)
+          this.createSocket = () => net.createConnection({ host, port })
+        }
       } else {
         this.createSocket = (path) => net.createConnection(path)
       }
