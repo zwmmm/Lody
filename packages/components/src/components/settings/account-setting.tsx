@@ -18,6 +18,7 @@ import { isNativeAppShell } from '@/lib/native-platform';
 import { useAppCapability } from '@/lib/app-platform';
 import { clearPreferredWorkspaceSlugIfMatch } from '@/lib/workspace';
 import { generateWebCliApiKey, listWebCliApiKeys, revokeWebCliApiKey } from '@/lib/cli-api-key';
+import { getIpcServices } from '@/lib/electron-ipc-client';
 import {
   buildOrganizationMemberRemovalRequest,
   buildOrganizationMemberRoleUpdateRequest,
@@ -46,9 +47,101 @@ export function AccountSettingsComponent({
   // safety net for direct and legacy deep links.
   const cloudAccountAvailable = useAppCapability('cloudAccount');
   if (!cloudAccountAvailable) {
+    if (isElectronRenderer() && surface === 'account') {
+      return <LocalAccountSettings />;
+    }
     return null;
   }
   return <CloudAccountSettings surface={surface} />;
+}
+
+function LocalAccountSettings() {
+  const { t } = useTranslation();
+  const { data: session } = useStableSession();
+  const [ghUserInfo, setGhUserInfo] = useState<{
+    authenticated: boolean;
+    user?: string;
+    name?: string;
+    email?: string;
+    avatarUrl?: string;
+  } | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    async function fetchUser() {
+      const services = getIpcServices();
+      if (!services?.localProjects) return;
+      try {
+        const info = await (services.localProjects as any).getGithubUserInfo();
+        if (active && info) {
+          setGhUserInfo(info);
+        }
+      } catch (err) {
+        console.error('Failed to get GitHub user info:', err);
+      }
+    }
+    void fetchUser();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const displayName =
+    ghUserInfo?.name || ghUserInfo?.user || session?.user?.name || 'Local User';
+  const displayEmail =
+    ghUserInfo?.email ||
+    session?.user?.email ||
+    (ghUserInfo?.user ? `${ghUserInfo.user}@users.noreply.github.com` : 'local@lody.local');
+  const displayImage = ghUserInfo?.avatarUrl || session?.user?.image || null;
+
+  const handleUpdateUserName = useCallback(
+    async (name: string) => {
+      setGhUserInfo((prev) => (prev ? { ...prev, name } : { authenticated: true, name }));
+      toast.success(t('settings.profile.nameUpdated', 'Username updated'));
+    },
+    [t]
+  );
+
+  const handleSignOut = useCallback(async () => {
+    toast.info(
+      t(
+        'settings.account.localModeNotice',
+        'Running in local mode with GitHub CLI authentication.'
+      )
+    );
+  }, [t]);
+
+  return (
+    <AccountSettingsPure
+      surface="account"
+      currentUser={{
+        id: session?.user?.id ?? 'local',
+        name: displayName,
+        email: displayEmail,
+        image: displayImage,
+      }}
+      organization={{
+        id: 'local',
+        name: 'Local Workspace',
+      }}
+      role="owner"
+      hasAdminPermission={true}
+      members={[]}
+      pendingInvitations={[]}
+      accountMachinesSlot={<AccountMachinesOverview />}
+      onSignOut={handleSignOut}
+      onUpdateUserName={handleUpdateUserName}
+      onInviteMember={async () => null}
+      onRemoveMember={async () => {}}
+      onUpdateRole={async () => {}}
+      onCopyInviteLink={async () => {}}
+      onCancelInvitation={async () => {}}
+      onLeaveOrganization={async () => {}}
+      onDeleteOrganization={async () => {}}
+      onDeleteAccount={async () => {}}
+      getInviteLink={() => ''}
+    />
+  );
 }
 
 function CloudAccountSettings({ surface }: { surface: AccountSettingsSurface }) {
@@ -348,6 +441,19 @@ function CloudAccountSettings({ surface }: { surface: AccountSettingsSurface }) 
     [linkedAccounts]
   );
 
+  const handleCopyInviteLink = useCallback(
+    async (link: string) => {
+      try {
+        await navigator.clipboard.writeText(link);
+        toast.success(t('workspace.invite.copied'));
+      } catch (error) {
+        console.error('Failed to copy invite link:', error);
+        toast.error(t('workspace.invite.copyError'));
+      }
+    },
+    [t]
+  );
+
   const handleUpdateUserName = useCallback(
     async (name: string) => {
       const { error } = await authClient.updateUser({ name });
@@ -449,19 +555,11 @@ function CloudAccountSettings({ surface }: { surface: AccountSettingsSurface }) 
       if (error) {
         throw error;
       }
+      setPendingInvitations((previous) => previous.filter((inv) => inv.id !== invitationId));
+      toast.success(t('workspace.invite.cancelled'));
     } catch (error) {
       console.error('Failed to cancel invitation:', error);
-      toast.error(t('workspace.invitations.cancelError'));
-      throw error;
-    }
-  };
-
-  const handleCopyInviteLink = async (link: string) => {
-    try {
-      await navigator.clipboard.writeText(link);
-    } catch (error) {
-      console.error('Failed to copy link:', error);
-      toast.error(t('workspace.invite.linkCopyError', 'Failed to copy invite link'));
+      toast.error(t('workspace.invite.cancelError'));
     }
   };
 
@@ -485,15 +583,7 @@ function CloudAccountSettings({ surface }: { surface: AccountSettingsSurface }) 
         }
 
         setGeneratedCliApiKey(result.apiKey);
-        const record = result.record;
-        if (record) {
-          setCliApiKeys((records) => [
-            record,
-            ...records.filter((existingRecord) => existingRecord.id !== record.id),
-          ]);
-        } else {
-          void refreshCliApiKeys();
-        }
+        await refreshCliApiKeys();
 
         try {
           await navigator.clipboard.writeText(result.apiKey);

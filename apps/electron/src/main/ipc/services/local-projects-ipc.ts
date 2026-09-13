@@ -1,5 +1,4 @@
-import { BrowserWindow } from 'electron'
-import { dialog } from 'electron'
+import { app, BrowserWindow, dialog } from 'electron'
 import { spawn } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import os from 'node:os'
@@ -24,6 +23,71 @@ import { getUserShellEnvCached } from '../../services/shell-env'
 
 const SESSION_FILE_SEND_LOCAL_MAX_COUNT = 8
 const SESSION_FILE_SEND_LOCAL_MAX_SIZE_BYTES = 100 * 1024 * 1024
+
+export type GithubUserInfo = {
+  authenticated: boolean
+  user?: string
+  name?: string
+  email?: string
+  avatarUrl?: string
+  bio?: string
+  error?: string
+}
+
+export type LocalGithubRepository = {
+  id: string
+  name: string
+  fullName: string
+  private: boolean
+  description?: string
+  enabled: boolean
+}
+
+let cachedGithubUserInfo: { timestamp: number; data: GithubUserInfo } | null = null
+const GITHUB_USER_INFO_TTL_MS = 5 * 60 * 1000 // 5 minutes
+
+let cachedGithubRepositories: {
+  timestamp: number
+  data: LocalGithubRepository[]
+} | null = null
+const GITHUB_REPOS_TTL_MS = 5 * 60 * 1000 // 5 minutes
+
+function getGithubSettingsFilePath(): string {
+  return path.join(app.getPath('userData'), 'github-settings.json')
+}
+
+async function getDisabledGithubRepos(): Promise<Set<string>> {
+  try {
+    const raw = await fs.readFile(getGithubSettingsFilePath(), 'utf-8')
+    const parsed = JSON.parse(raw)
+    if (Array.isArray(parsed?.disabledRepos)) {
+      return new Set(parsed.disabledRepos)
+    }
+  } catch {
+    // file doesn't exist or invalid
+  }
+  return new Set()
+}
+
+async function setRepoEnabledState(repoFullName: string, enabled: boolean): Promise<void> {
+  try {
+    const filePath = getGithubSettingsFilePath()
+    const disabled = await getDisabledGithubRepos()
+    if (enabled) {
+      disabled.delete(repoFullName)
+    } else {
+      disabled.add(repoFullName)
+    }
+    await fs.mkdir(path.dirname(filePath), { recursive: true })
+    await fs.writeFile(
+      filePath,
+      JSON.stringify({ disabledRepos: Array.from(disabled) }, null, 2),
+      'utf-8'
+    )
+  } catch (err) {
+    console.error('Failed to save github repo state', err)
+  }
+}
 
 function parseSendSessionFileLocalInput(payload: unknown): SendSessionFileLocalInput | null {
   if (!payload || typeof payload !== 'object') return null
@@ -141,8 +205,7 @@ export class LocalProjectsIpc extends IpcService {
     const mainWindow = BrowserWindow.fromWebContents(getIpcContext().event.sender)
     const result =
       mainWindow && !mainWindow.isDestroyed()
-        ? await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] })
-        : await dialog.showOpenDialog({ properties: ['openDirectory'] })
+        ? await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] })\n        : await dialog.showOpenDialog({ properties: ['openDirectory'] })
     if (result.canceled) return null
     const selectedPath = result.filePaths[0]
     if (!selectedPath) return null
@@ -355,43 +418,112 @@ export class LocalProjectsIpc extends IpcService {
   }
 
   @IpcMethod()
-  async getGithubAuthStatus(): Promise<{ authenticated: boolean; user?: string; error?: string }> {
+  async getGithubUserInfo(forceRefresh = false): Promise<GithubUserInfo> {
+    if (
+      !forceRefresh &&
+      cachedGithubUserInfo &&
+      Date.now() - cachedGithubUserInfo.timestamp < GITHUB_USER_INFO_TTL_MS
+    ) {
+      return cachedGithubUserInfo.data
+    }
     const userEnv = await getUserShellEnvCached()
     const env = { ...process.env, ...(userEnv ?? {}) }
-    return await new Promise((resolve) => {
-      const child = spawn('gh', ['auth', 'status'], {
+    const result = await new Promise<GithubUserInfo>((resolve) => {
+      const child = spawn('gh', ['api', 'user'], {
         env,
         stdio: ['ignore', 'pipe', 'pipe']
       })
-      let output = ''
-      child.stdout?.on('data', (d) => (output += d.toString()))
-      child.stderr?.on('data', (d) => (output += d.toString()))
+      let stdout = ''
+      let stderr = ''
+      child.stdout?.on('data', (d) => (stdout += d.toString()))
+      child.stderr?.on('data', (d) => (stderr += d.toString()))
       child.on('error', (err) => {
         resolve({ authenticated: false, error: err.message })
       })
-      child.on('close', (code) => {
+      child.on('close', async (code) => {
         if (code === 0) {
-          const match = /Logged in to [^ ]+ account ([^ ]+)/.exec(output)
-          resolve({ authenticated: true, user: match?.[1] })
+          try {
+            const data = JSON.parse(stdout)
+            let email = data.email || undefined
+            if (!email) {
+              try {
+                email = await new Promise<string | undefined>((res) => {
+                  const emailChild = spawn('gh', ['api', 'user/emails'], {
+                    env,
+                    stdio: ['ignore', 'pipe', 'pipe']
+                  })
+                  let emailStdout = ''
+                  emailChild.stdout?.on('data', (d) => (emailStdout += d.toString()))
+                  emailChild.on('close', (eCode) => {
+                    if (eCode === 0) {
+                      try {
+                        const emails = JSON.parse(emailStdout)
+                        const primary =
+                          emails.find((e: any) => e.primary)?.email || emails[0]?.email
+                        res(primary)
+                      } catch {
+                        res(undefined)
+                      }
+                    } else {
+                      res(undefined)
+                    }
+                  })
+                })
+              } catch {
+                // ignore
+              }
+            }
+            resolve({
+              authenticated: true,
+              user: data.login,
+              name: data.name || data.login,
+              email,
+              avatarUrl: data.avatar_url,
+              bio: data.bio || undefined
+            })
+          } catch (e: any) {
+            resolve({ authenticated: false, error: e.message })
+          }
         } else {
-          resolve({ authenticated: false, error: output || `gh exited with code ${code}` })
+          resolve({
+            authenticated: false,
+            error: stderr || `gh api user failed with code ${code}`
+          })
         }
       })
     })
+
+    if (result.authenticated) {
+      cachedGithubUserInfo = { timestamp: Date.now(), data: result }
+    }
+    return result
   }
 
   @IpcMethod()
-  async listGithubRepositories(): Promise<{
+  async getGithubAuthStatus(): Promise<{ authenticated: boolean; user?: string; error?: string }> {
+    const info = await this.getGithubUserInfo()
+    return {
+      authenticated: info.authenticated,
+      user: info.user,
+      error: info.error
+    }
+  }
+
+  @IpcMethod()
+  async listGithubRepositories(forceRefresh = false): Promise<{
     ok: boolean
-    repositories?: Array<{
-      id: string
-      name: string
-      fullName: string
-      private: boolean
-      description?: string
-    }>
+    repositories?: LocalGithubRepository[]
     error?: string
   }> {
+    if (
+      !forceRefresh &&
+      cachedGithubRepositories &&
+      Date.now() - cachedGithubRepositories.timestamp < GITHUB_REPOS_TTL_MS
+    ) {
+      return { ok: true, repositories: cachedGithubRepositories.data }
+    }
+
+    const disabledSet = await getDisabledGithubRepos()
     const userEnv = await getUserShellEnvCached()
     const env = { ...process.env, ...(userEnv ?? {}) }
     return await new Promise((resolve) => {
@@ -424,8 +556,10 @@ export class LocalProjectsIpc extends IpcService {
               name: r.name,
               fullName: r.nameWithOwner,
               private: r.isPrivate,
-              description: r.description ?? undefined
+              description: r.description ?? undefined,
+              enabled: !disabledSet.has(r.nameWithOwner)
             }))
+            cachedGithubRepositories = { timestamp: Date.now(), data: repositories }
             resolve({ ok: true, repositories })
           } catch (e: any) {
             resolve({ ok: false, error: `JSON parse error: ${e.message}` })
@@ -435,5 +569,16 @@ export class LocalProjectsIpc extends IpcService {
         }
       })
     })
+  }
+
+  @IpcMethod()
+  async setGithubRepoEnabled(repoFullName: string, enabled: boolean): Promise<{ ok: boolean }> {
+    await setRepoEnabledState(repoFullName, enabled)
+    if (cachedGithubRepositories) {
+      cachedGithubRepositories.data = cachedGithubRepositories.data.map((r) =>
+        r.fullName === repoFullName ? { ...r, enabled } : r
+      )
+    }
+    return { ok: true }
   }
 }

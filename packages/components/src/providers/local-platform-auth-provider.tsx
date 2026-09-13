@@ -47,7 +47,7 @@ export function LocalPlatformAuthProvider({
         ? {
             id: platformSession.user.id,
             name: platformSession.user.name ?? 'Local',
-            email: 'local@lody.local',
+            email: platformSession.user.email ?? 'local@lody.local',
             image: platformSession.user.image ?? null,
           }
         : null;

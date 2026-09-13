@@ -37,6 +37,23 @@ const CLOUD_WORKSPACES_STORE: ReadonlyStore<WorkspacesState> = createStaticStore
   status: 'loading',
 } as WorkspacesState);
 
+async function resolveInitialUserInfo(userId: string) {
+  try {
+    const ghUser = await getIpcServices()?.localProjects.getGithubUserInfo();
+    if (ghUser?.authenticated) {
+      return {
+        id: userId,
+        name: ghUser.name || ghUser.user || 'Local',
+        email: ghUser.email || (ghUser.user ? `${ghUser.user}@users.noreply.github.com` : 'local@lody.local'),
+        image: ghUser.avatarUrl || null,
+      };
+    }
+  } catch {
+    // Fall back to default local user
+  }
+  return { id: userId, name: 'Local', email: 'local@lody.local' };
+}
+
 function startLocalPlatformSnapshotPolling(
   sessionStore: MutableStore<PlatformSessionState>,
   workspacesStore: MutableStore<WorkspacesState>
@@ -61,9 +78,11 @@ function startLocalPlatformSnapshotPolling(
         slug: workspace.slug,
         role: workspace.role,
       };
+      
+      const user = await resolveInitialUserInfo(snapshot.userId);
       sessionStore.set({
         status: 'authenticated',
-        user: { id: snapshot.userId, name: 'Local' },
+        user,
       });
       workspacesStore.set({
         status: 'ready',
@@ -92,6 +111,28 @@ function startLocalPlatformSnapshotPolling(
     void poll();
   }, IMPLICIT_WORKSPACE_POLL_INTERVAL_MS);
   void poll();
+}
+
+export async function refreshLocalPlatformUser(): Promise<void> {
+  const sessionStore = getLocalSessionStore();
+  const currentSession = sessionStore.get();
+  if (currentSession.status !== 'authenticated') return;
+  try {
+    const ghUser = await getIpcServices()?.localProjects.getGithubUserInfo(true);
+    if (ghUser?.authenticated) {
+      sessionStore.set({
+        status: 'authenticated',
+        user: {
+          ...currentSession.user,
+          name: ghUser.name || ghUser.user || currentSession.user.name,
+          email: ghUser.email || (ghUser.user ? `${ghUser.user}@users.noreply.github.com` : currentSession.user.email),
+          image: ghUser.avatarUrl || currentSession.user.image,
+        },
+      });
+    }
+  } catch (e) {
+    console.error('refreshLocalPlatformUser error', e);
+  }
 }
 
 function getLocalWorkspacesStore(): MutableStore<WorkspacesState> {

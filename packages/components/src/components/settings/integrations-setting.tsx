@@ -20,7 +20,7 @@ import { useAppCapability } from '@/lib/app-platform';
 import { ScrollArea } from '@/ui/scroll-area';
 import { Switch } from '@/ui/switch';
 import { Input } from '@/ui/input';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { toast } from 'sonner';
 import { useSettingsDataCache, type SettingsWorkspaceRepoWithStatus } from './settings-data-cache';
 import { MobileIntegrationsSettings } from '@/components/mobile/mobile-integrations-settings';
@@ -261,6 +261,219 @@ export function GitHubPersonalIdentitySettingsCard({
   );
 }
 
+export type GitHubSettingsCardViewProps = {
+  appTitle?: string;
+  headerAction?: ReactNode;
+  canManage?: boolean;
+  adminOnlyHint?: ReactNode;
+
+  // Identity Card
+  personalIdentityEnabled: boolean;
+  personalAuthorizationState: GitHubPersonalIdentityAuthorizationState;
+  personalGithubAccountId?: string;
+  personalGithubProfile?: GitHubPersonalIdentityProfile;
+  settingsLoading?: boolean;
+  updatingPersonalPreference?: boolean;
+  authorizingPersonalGitHub?: boolean;
+  workspaceReady?: boolean;
+  canAuthorizePersonalGitHub?: boolean;
+  onTogglePersonalIdentity: (enabled: boolean) => void;
+  onAuthorizePersonalGitHub: () => void;
+
+  // Repos
+  repos: Array<{ repoFullName: string; private: boolean; enabled: boolean }>;
+  workspaceReposLoading?: boolean;
+  repoSearch: string;
+  onRepoSearchChange: (search: string) => void;
+  onToggleRepo: (repoFullName: string, checked: boolean) => void;
+  canToggleRepo?: boolean;
+  footerHint?: ReactNode;
+};
+
+export function GitHubSettingsCardView({
+  appTitle = 'GitHub',
+  headerAction,
+  canManage = true,
+  adminOnlyHint,
+  personalIdentityEnabled,
+  personalAuthorizationState,
+  personalGithubAccountId,
+  personalGithubProfile,
+  settingsLoading = false,
+  updatingPersonalPreference = false,
+  authorizingPersonalGitHub = false,
+  workspaceReady = true,
+  canAuthorizePersonalGitHub = true,
+  onTogglePersonalIdentity,
+  onAuthorizePersonalGitHub,
+  repos,
+  workspaceReposLoading = false,
+  repoSearch,
+  onRepoSearchChange,
+  onToggleRepo,
+  canToggleRepo = true,
+  footerHint,
+}: GitHubSettingsCardViewProps) {
+  const { t } = useTranslation();
+  const searchQuery = repoSearch.trim().toLowerCase();
+  const filteredRepos = useMemo(() => {
+    if (!searchQuery) return repos;
+    return repos.filter((repo) => repo.repoFullName.toLowerCase().includes(searchQuery));
+  }, [repos, searchQuery]);
+
+  const enabledCount = useMemo(() => repos.filter((r) => r.enabled).length, [repos]);
+
+  return (
+    <div className={settingContainerClass}>
+      <div id="github" className="space-y-3">
+        <div className="rounded-lg bg-foreground/[0.04] p-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/[0.15] text-primary">
+                <Github className="h-[1.05rem] w-[1.05rem]" />
+              </div>
+              <p className="text-sm font-medium text-foreground">{appTitle}</p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">{headerAction}</div>
+          </div>
+          {!canManage && adminOnlyHint && (
+            <div className="mt-2 text-xs text-muted-foreground">{adminOnlyHint}</div>
+          )}
+
+          <div className="mt-3 border-t border-border/50">
+            <GitHubPersonalIdentitySettingsCard
+              enabled={personalIdentityEnabled}
+              authorizationState={personalAuthorizationState}
+              githubAccountId={personalGithubAccountId}
+              profile={personalGithubProfile}
+              settingsLoading={settingsLoading}
+              updating={updatingPersonalPreference}
+              authorizing={authorizingPersonalGitHub}
+              workspaceReady={workspaceReady}
+              canAuthorize={canAuthorizePersonalGitHub}
+              onToggle={onTogglePersonalIdentity}
+              onAuthorize={onAuthorizePersonalGitHub}
+            />
+          </div>
+        </div>
+
+        <div className="rounded-lg bg-foreground/[0.03] p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-sm font-semibold text-foreground">
+              {t('settings.integrations.github.authorizedReposTitle', 'Authorized Repositories')}
+            </span>
+            {repos.length > 0 && (
+              <span className="text-xs tabular-nums text-muted-foreground">
+                {searchQuery && filteredRepos.length !== repos.length ? (
+                  <>
+                    <span className="font-medium text-foreground/80">{filteredRepos.length}</span>
+                    {` / ${repos.length} ${t('settings.integrations.github.repoBadge')}`}
+                  </>
+                ) : (
+                  <>
+                    <span className="font-medium text-foreground/80">{enabledCount}</span>
+                    {` / ${repos.length} ${t('settings.integrations.github.repoBadge')}`}
+                  </>
+                )}
+              </span>
+            )}
+          </div>
+
+          <div className="mt-3 space-y-2">
+            {repos.length > 5 && (
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  type="search"
+                  value={repoSearch}
+                  onChange={(event) => onRepoSearchChange(event.target.value)}
+                  placeholder={t('repos.search')}
+                  className="rounded-md border-transparent bg-foreground/[0.035] pl-9 shadow-none focus-visible:border-transparent focus-visible:ring-1 focus-visible:ring-foreground/20"
+                />
+              </div>
+            )}
+            <ScrollArea
+              className="rounded-lg bg-transparent"
+              viewportClassName="max-h-[min(40dvh,20rem)] overflow-y-auto overflow-x-hidden overscroll-contain touch-pan-y"
+              viewportStyle={{ WebkitOverflowScrolling: 'touch' }}
+            >
+              {workspaceReposLoading ? (
+                <div className="flex items-center justify-center gap-2 p-6 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  {t('settings.integrations.github.loading')}
+                </div>
+              ) : repos.length === 0 ? (
+                <div className="p-6 text-sm text-muted-foreground">
+                  {t(
+                    'settings.integrations.github.noAuthorizedRepos',
+                    'No repositories authorized yet. Install the GitHub App to get started.'
+                  )}
+                </div>
+              ) : filteredRepos.length === 0 ? (
+                <div className="p-6 text-sm text-muted-foreground">
+                  {t('settings.integrations.github.noRepos')}
+                </div>
+              ) : (
+                <div className="space-y-px">
+                  {filteredRepos.map((repo) => (
+                    <div
+                      key={repo.repoFullName}
+                      className={cn(
+                        'group flex items-center justify-between gap-3 rounded-md px-2 py-1.5 transition-colors hover:bg-hover/40',
+                        !canToggleRepo && 'opacity-60'
+                      )}
+                    >
+                      <div className="flex min-w-0 items-center gap-2.5">
+                        <Book className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <span className="truncate text-sm text-foreground/90">
+                          {repo.repoFullName}
+                        </span>
+                        {repo.private && (
+                          <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border/60 px-1.5 py-0 text-[10px] font-medium text-muted-foreground">
+                            <Lock className="h-2.5 w-2.5" />
+                            {t('settings.integrations.github.private')}
+                          </span>
+                        )}
+                      </div>
+                      <Switch
+                        checked={repo.enabled}
+                        onCheckedChange={(checked) => {
+                          void onToggleRepo(repo.repoFullName, checked);
+                        }}
+                        disabled={!canToggleRepo}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </ScrollArea>
+            {footerHint ?? (
+              <p className="px-1 text-[11px] leading-relaxed text-muted-foreground/80">
+                {t('settings.integrations.github.missingReposHint')}{' '}
+                <a
+                  href="https://github.com/settings/installations"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-0.5 text-foreground/80 underline-offset-2 hover:underline"
+                  onClick={(event) => {
+                    if (isElectronRenderer()) {
+                      event.preventDefault();
+                      void openExternalUrl('https://github.com/settings/installations');
+                    }
+                  }}
+                >
+                  {t('settings.integrations.github.missingReposHintAction')}
+                  <ArrowUpRight className="h-3 w-3" />
+                </a>
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /**
  * 集成设置组件
  * 用于管理第三方服务集成，如 GitHub App，支持移动端响应式布局
@@ -277,29 +490,48 @@ export function IntegrationsSettingsComponent() {
   }
   return <CloudIntegrationsSettings />;
 }
+
 function LocalGithubCliSettings() {
   const { t } = useTranslation();
-  const isMobile = useIsMobile();
-  const [authStatus, setAuthStatus] = useState<{ authenticated: boolean; user?: string; error?: string } | null>(null);
+  const [userInfo, setUserInfo] = useState<{
+    authenticated: boolean;
+    user?: string;
+    name?: string;
+    email?: string;
+    avatarUrl?: string;
+  } | null>(null);
   const [loading, setLoading] = useState(true);
-  const [repos, setRepos] = useState<Array<{ id: string; name: string; fullName: string; private: boolean; description?: string }>>([]);
-  const [search, setSearch] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+  const [repos, setRepos] = useState<
+    Array<{ repoFullName: string; private: boolean; enabled: boolean }>
+  >([]);
+  const [repoSearch, setRepoSearch] = useState('');
+  const [actAsYou, setActAsYou] = useState(true);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (force = false) => {
     const services = getIpcServices();
     if (!services?.localProjects) return;
-    setLoading(true);
+    if (force) setRefreshing(true);
     try {
-      const auth = await (services.localProjects as any).getGithubAuthStatus();
-      setAuthStatus(auth);
-      if (auth.authenticated) {
-        const repoRes = await (services.localProjects as any).listGithubRepositories();
+      const user = await (services.localProjects as any).getGithubUserInfo(force);
+      setUserInfo(user);
+      if (user?.authenticated) {
+        const repoRes = await (services.localProjects as any).listGithubRepositories(force);
         if (repoRes?.ok && Array.isArray(repoRes.repositories)) {
-          setRepos(repoRes.repositories);
+          setRepos(
+            repoRes.repositories.map((r: any) => ({
+              repoFullName: r.fullName || r.name,
+              private: Boolean(r.private),
+              enabled: r.enabled !== false,
+            }))
+          );
         }
       }
+    } catch (error) {
+      console.error('Failed to load GitHub data via gh:', error);
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }, []);
 
@@ -307,110 +539,77 @@ function LocalGithubCliSettings() {
     void refresh();
   }, [refresh]);
 
-  const filteredRepos = useMemo(() => {
-    if (!search.trim()) return repos;
-    const q = search.trim().toLowerCase();
-    return repos.filter((r) => r.fullName.toLowerCase().includes(q));
-  }, [repos, search]);
+  const handleToggleRepo = useCallback(async (repoFullName: string, checked: boolean) => {
+    setRepos((prev) =>
+      prev.map((r) => (r.repoFullName === repoFullName ? { ...r, enabled: checked } : r))
+    );
+    const services = getIpcServices();
+    if (services?.localProjects) {
+      try {
+        await (services.localProjects as any).setGithubRepoEnabled(repoFullName, checked);
+      } catch (err) {
+        console.error('Failed to update repo enabled status', err);
+      }
+    }
+  }, []);
+
+  const profile: GitHubPersonalIdentityProfile | undefined = userInfo?.authenticated
+    ? {
+        login: userInfo.user ?? '',
+        name: userInfo.name,
+        avatarUrl: userInfo.avatarUrl,
+        htmlUrl: userInfo.user ? `https://github.com/${userInfo.user}` : undefined,
+      }
+    : undefined;
 
   return (
-    <div className={cn(settingContainerClass, isMobile ? 'px-4 py-4' : 'max-w-4xl py-6')}>
-      <div className="mb-6 flex items-center justify-between">
-        <div>
-          <h2 className="text-lg font-semibold tracking-tight text-foreground">
-            {t('settings.integrations.title', 'GitHub Integration')}
-          </h2>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            {t('settings.integrations.github.localCliDescription', 'Using local GitHub CLI (gh) configuration and credentials.')}
-          </p>
-        </div>
-        <Button size="sm" variant="outline" onClick={refresh} disabled={loading} className="text-xs">
-          {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : null}
+    <GitHubSettingsCardView
+      appTitle="GitHub"
+      headerAction={
+        <Button
+          size="sm"
+          className="inline-flex items-center gap-1 whitespace-nowrap bg-foreground/[0.05] text-foreground hover:bg-foreground/[0.08]"
+          variant="ghost"
+          onClick={() => void refresh(true)}
+          disabled={refreshing || loading}
+        >
+          {refreshing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
           {t('common.refresh', 'Refresh')}
         </Button>
-      </div>
-
-      <div className="rounded-lg border border-border/70 bg-card/60 p-4 mb-6">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-foreground/[0.06] text-muted-foreground">
-              <Github className="h-5 w-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-semibold text-foreground">
-                  {authStatus?.authenticated ? "@" + String(authStatus.user) : "GitHub CLI"}
-                </span>
-                {authStatus?.authenticated ? (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
-                    <CheckCircle2 className="h-3 w-3" /> Connected via gh
-                  </span>
-                ) : (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
-                    <AlertCircle className="h-3 w-3" /> Not Logged In
-                  </span>
-                )}
-              </div>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                {authStatus?.authenticated
-                  ? 'Authenticated using your local gh CLI session.'
-                  : 'Run "gh auth login" in your terminal to connect your GitHub account.'}
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {authStatus?.authenticated && (
-        <div className="rounded-lg border border-border/70 bg-card/60 p-4">
-          <div className="mb-3 flex items-center justify-between gap-4">
-            <span className="text-xs font-semibold text-foreground">
-              Repositories ({repos.length})
-            </span>
-            <div className="w-48">
-              <Input
-                placeholder="Search repositories..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="h-7 text-xs"
-              />
-            </div>
-          </div>
-          <ScrollArea className="h-80">
-            <div className="space-y-1.5 pr-2">
-              {filteredRepos.map((repo) => (
-                <div
-                  key={repo.id}
-                  className="flex items-center justify-between rounded-md border border-border/40 bg-muted/20 px-3 py-2 text-xs"
-                >
-                  <div className="min-w-0 pr-2">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium text-foreground truncate">{repo.fullName}</span>
-                      {repo.private && (
-                        <span className="rounded bg-muted px-1.5 py-0.2 text-[10px] text-muted-foreground border border-border/50">
-                          Private
-                        </span>
-                      )}
-                    </div>
-                    {repo.description && (
-                      <p className="text-[11px] text-muted-foreground truncate mt-0.5">{repo.description}</p>
-                    )}
-                  </div>
-                </div>
-              ))}
-              {filteredRepos.length === 0 && (
-                <div className="py-8 text-center text-xs text-muted-foreground">
-                  No repositories found
-                </div>
-              )}
-            </div>
-          </ScrollArea>
-        </div>
-      )}
-    </div>
+      }
+      canManage={true}
+      personalIdentityEnabled={actAsYou}
+      personalAuthorizationState={userInfo?.authenticated ? 'authorized' : 'missing'}
+      personalGithubProfile={profile}
+      settingsLoading={loading}
+      workspaceReady={true}
+      canAuthorizePersonalGitHub={!userInfo?.authenticated}
+      onTogglePersonalIdentity={(checked) => setActAsYou(checked)}
+      onAuthorizePersonalGitHub={() => {
+        toast.info(
+          t(
+            'settings.integrations.github.cliLoginHint',
+            'Run "gh auth login" in your terminal to authenticate.'
+          )
+        );
+      }}
+      repos={repos}
+      workspaceReposLoading={loading}
+      repoSearch={repoSearch}
+      onRepoSearchChange={setRepoSearch}
+      onToggleRepo={handleToggleRepo}
+      canToggleRepo={true}
+      footerHint={
+        <p className="px-1 text-[11px] leading-relaxed text-muted-foreground/80">
+          {t(
+            'settings.integrations.github.localCliDescription',
+            'Using local GitHub CLI (gh) configuration and credentials.'
+          )}
+        </p>
+      }
+    />
   );
 }
-
 
 function CloudIntegrationsSettings() {
   const { t } = useTranslation();
@@ -486,14 +685,6 @@ function CloudIntegrationsSettings() {
     }));
   }, [workspaceReposWithStatus, optimisticToggles]);
 
-  const searchQuery = repoSearch.trim().toLowerCase();
-  const filteredRepos = useMemo(() => {
-    if (!searchQuery) return repos;
-    return repos.filter((repo) => repo.repoFullName.toLowerCase().includes(searchQuery));
-  }, [repos, searchQuery]);
-
-  const enabledCount = useMemo(() => repos.filter((r) => r.enabled).length, [repos]);
-  const showGitHubConnectSpinner = connectingToGitHub || workspaceAuthPending;
   const personalIdentityEnabled = personalOperationSettings?.enabled ?? false;
   const personalAuthorizationState = personalOperationSettings?.authorization.state ?? 'missing';
   const personalAuthorization =
@@ -688,174 +879,54 @@ function CloudIntegrationsSettings() {
   if (isMobile) return <MobileIntegrationsSettings />;
 
   return (
-    <div className={settingContainerClass}>
-      <div id="github" className="space-y-3">
-        <div className="rounded-lg bg-foreground/[0.04] p-3">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
-            <div className="flex min-w-0 items-center gap-3">
-              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/[0.15] text-primary">
-                <Github className="h-[1.05rem] w-[1.05rem]" />
-              </div>
-              <p className="text-sm font-medium text-foreground">GitHub App</p>
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-              {canManage && (
-                <Button
-                  size="sm"
-                  className="inline-flex items-center gap-1 whitespace-nowrap bg-foreground/[0.05] text-foreground hover:bg-foreground/[0.08]"
-                  variant="ghost"
-                  onClick={() => {
-                    void handleConnectGitHub();
-                  }}
-                  disabled={showGitHubConnectSpinner || !workspaceAuthReady}
-                >
-                  {showGitHubConnectSpinner ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : null}
-                  {t('settings.integrations.github.connect')}
-                  {!showGitHubConnectSpinner ? <ArrowUpRight className="h-3.5 w-3.5" /> : null}
-                </Button>
-              )}
-            </div>
-          </div>
-          {!canManage && (
-            <div className="mt-2 text-xs text-muted-foreground">
-              {t('settings.integrations.github.adminOnlyHint')}
-            </div>
-          )}
-
-          <div className="mt-3 border-t border-border/50">
-            <GitHubPersonalIdentitySettingsCard
-              enabled={personalIdentityEnabled}
-              authorizationState={personalAuthorizationState}
-              githubAccountId={personalGithubAccountId}
-              profile={personalGithubProfile}
-              settingsLoading={personalOperationSettings === undefined}
-              updating={updatingPersonalPreference}
-              authorizing={authorizingPersonalGitHub}
-              workspaceReady={workspaceAuthReady}
-              canAuthorize={canAuthorizePersonalGitHub}
-              onToggle={(checked) => {
-                void handleTogglePersonalIdentity(checked);
-              }}
-              onAuthorize={() => {
-                void handleAuthorizePersonalGitHub();
-              }}
-            />
-          </div>
-        </div>
-
-        <div className="rounded-lg bg-foreground/[0.03] p-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-sm font-semibold text-foreground">
-              {t('settings.integrations.github.authorizedReposTitle', 'Authorized Repositories')}
-            </span>
-            {repos.length > 0 && (
-              <span className="text-xs tabular-nums text-muted-foreground">
-                {searchQuery && filteredRepos.length !== repos.length ? (
-                  <>
-                    <span className="font-medium text-foreground/80">{filteredRepos.length}</span>
-                    {` / ${repos.length} ${t('settings.integrations.github.repoBadge')}`}
-                  </>
-                ) : (
-                  <>
-                    <span className="font-medium text-foreground/80">{enabledCount}</span>
-                    {` / ${repos.length} ${t('settings.integrations.github.repoBadge')}`}
-                  </>
-                )}
-              </span>
-            )}
-          </div>
-
-          <div className="mt-3 space-y-2">
-            {repos.length > 5 && (
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  type="search"
-                  value={repoSearch}
-                  onChange={(event) => setRepoSearch(event.target.value)}
-                  placeholder={t('repos.search')}
-                  className="rounded-md border-transparent bg-foreground/[0.035] pl-9 shadow-none focus-visible:border-transparent focus-visible:ring-1 focus-visible:ring-foreground/20"
-                />
-              </div>
-            )}
-            <ScrollArea
-              className="rounded-lg bg-transparent"
-              viewportClassName="max-h-[min(40dvh,20rem)] overflow-y-auto overflow-x-hidden overscroll-contain touch-pan-y"
-              viewportStyle={{ WebkitOverflowScrolling: 'touch' }}
-            >
-              {workspaceReposLoading ? (
-                <div className="flex items-center justify-center gap-2 p-6 text-sm text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  {t('settings.integrations.github.loading')}
-                </div>
-              ) : repos.length === 0 ? (
-                <div className="p-6 text-sm text-muted-foreground">
-                  {t(
-                    'settings.integrations.github.noAuthorizedRepos',
-                    'No repositories authorized yet. Install the GitHub App to get started.'
-                  )}
-                </div>
-              ) : filteredRepos.length === 0 ? (
-                <div className="p-6 text-sm text-muted-foreground">
-                  {t('settings.integrations.github.noRepos')}
-                </div>
-              ) : (
-                <div className="space-y-px">
-                  {filteredRepos.map((repo) => (
-                    <div
-                      key={repo.repoFullName}
-                      className={cn(
-                        'group flex items-center justify-between gap-3 rounded-md px-2 py-1.5 transition-colors hover:bg-hover/40',
-                        (!canManage || !workspaceAuthReady) && 'opacity-60'
-                      )}
-                    >
-                      <div className="flex min-w-0 items-center gap-2.5">
-                        <Book className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                        <span className="truncate text-sm text-foreground/90">
-                          {repo.repoFullName}
-                        </span>
-                        {repo.private && (
-                          <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border/60 px-1.5 py-0 text-[10px] font-medium text-muted-foreground">
-                            <Lock className="h-2.5 w-2.5" />
-                            {t('settings.integrations.github.private')}
-                          </span>
-                        )}
-                      </div>
-                      <Switch
-                        checked={repo.enabled}
-                        onCheckedChange={(checked) => {
-                          void handleToggleRepo(repo.repoFullName, checked);
-                        }}
-                        disabled={!canManage || !workspaceAuthReady}
-                      />
-                    </div>
-                  ))}
-                </div>
-              )}
-            </ScrollArea>
-            <p className="px-1 text-[11px] leading-relaxed text-muted-foreground/80">
-              {t('settings.integrations.github.missingReposHint')}{' '}
-              <a
-                href="https://github.com/settings/installations"
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-0.5 text-foreground/80 underline-offset-2 hover:underline"
-                onClick={(event) => {
-                  if (isElectronRenderer()) {
-                    event.preventDefault();
-                    void openExternalUrl('https://github.com/settings/installations');
-                  }
-                }}
-              >
-                {t('settings.integrations.github.missingReposHintAction')}
-                <ArrowUpRight className="h-3 w-3" />
-              </a>
-            </p>
-          </div>
-        </div>
-      </div>
-    </div>
+    <GitHubSettingsCardView
+      appTitle="GitHub App"
+      headerAction={
+        canManage && (
+          <Button
+            size="sm"
+            className="inline-flex items-center gap-1 whitespace-nowrap bg-foreground/[0.05] text-foreground hover:bg-foreground/[0.08]"
+            variant="ghost"
+            onClick={() => {
+              void handleConnectGitHub();
+            }}
+            disabled={connectingToGitHub || workspaceAuthPending || !workspaceAuthReady}
+          >
+            {connectingToGitHub || workspaceAuthPending ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : null}
+            {t('settings.integrations.github.connect')}
+            {!connectingToGitHub && !workspaceAuthPending ? (
+              <ArrowUpRight className="h-3.5 w-3.5" />
+            ) : null}
+          </Button>
+        )
+      }
+      canManage={canManage}
+      adminOnlyHint={t('settings.integrations.github.adminOnlyHint')}
+      personalIdentityEnabled={personalIdentityEnabled}
+      personalAuthorizationState={personalAuthorizationState}
+      personalGithubAccountId={personalGithubAccountId}
+      personalGithubProfile={personalGithubProfile}
+      settingsLoading={personalOperationSettings === undefined}
+      updatingPersonalPreference={updatingPersonalPreference}
+      authorizingPersonalGitHub={authorizingPersonalGitHub}
+      workspaceReady={workspaceAuthReady}
+      canAuthorizePersonalGitHub={canAuthorizePersonalGitHub}
+      onTogglePersonalIdentity={(checked) => {
+        void handleTogglePersonalIdentity(checked);
+      }}
+      onAuthorizePersonalGitHub={() => {
+        void handleAuthorizePersonalGitHub();
+      }}
+      repos={repos}
+      workspaceReposLoading={workspaceReposLoading}
+      repoSearch={repoSearch}
+      onRepoSearchChange={setRepoSearch}
+      onToggleRepo={(repoFullName, checked) => {
+        void handleToggleRepo(repoFullName, checked);
+      }}
+      canToggleRepo={canManage && workspaceAuthReady}
+    />
   );
 }
